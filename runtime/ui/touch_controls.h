@@ -26,7 +26,10 @@ enum { OSB_BIT_SELECT = 0x1, OSB_BIT_START = 0x8, OSB_BIT_UP = 0x10, OSB_BIT_RIG
 
 enum { OSB_DPAD, OSB_TRIANGLE, OSB_CIRCLE, OSB_CROSS, OSB_SQUARE, OSB_L, OSB_R, OSB_SELECT, OSB_START, OSB_LSTICK, OSB_RSTICK, OSB_MENU, OSB_N };
 enum { OSB_OFF, OSB_AUTO, OSB_ON };
-#ifdef __ANDROID__
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)   /* (a device with no keyboard: the menu is a button on the screen) */
 enum { OSB_PLATFORM_MENU = 1 };
 #else
 enum { OSB_PLATFORM_MENU = 0 };

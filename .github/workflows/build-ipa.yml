@@ -1,0 +1,179 @@
+# Builds the unsigned .ipa from a game you supply as a link: Actions > build-ipa > Run workflow.
+#
+#   game_url      a direct link to a zip (or a .pkg) holding the game. The zip is unpacked and searched, at any depth, for
+#                 the .pkg, its work.bin licence and Sony's firmware update (PSP2UPDAT.PUP or PSVUPDAT.PUP); a game folder
+#                 copied off a Vita (sce_sys/param.sfo + eboot.bin) works too. A NoNpDrm release is exactly that.
+#   firmware_url  optional: the firmware file when the zip has none
+#   update_url    optional: the game's update (a .pkg or a zip with one)
+#
+# The links carry keys: put them in the repository's secrets GAME_URL, FIRMWARE_URL, UPDATE_URL instead of the form to keep
+# them out of the run page (a field left empty falls back to its secret). Neither is ever echoed in the log.
+#
+# What runs: a Mac runner builds SDL3, zlib, SPIRV-Cross and FFmpeg for iOS once (cached), decrypts the game with the
+# licence, recompiles its ARM code to C, compiles that for arm64 iOS, and packs the ipa (vitarecomp export-ios) -- no PC needed.
+# The ipa holds the game's own data: the artifact is yours alone, so keep this repository private or the run short-lived,
+# and sideload the file; never publish it.
+name: build-ipa
+on:
+  workflow_dispatch:
+    inputs:
+      game_url:
+        description: Direct link to the game's zip (or .pkg). Empty = the GAME_URL secret
+        required: false
+        type: string
+      firmware_url:
+        description: Direct link to PSP2UPDAT.PUP, when the zip has none. Empty = the FIRMWARE_URL secret
+        required: false
+        type: string
+      update_url:
+        description: Direct link to the game's update (.pkg / zip), optional. Empty = the UPDATE_URL secret
+        required: false
+        type: string
+      title:
+        description: Title id to build when the download holds several games (PCSB00875); empty = the first
+        required: false
+        type: string
+      experimental:
+        description: Build a version the game's pack doesn't play anyway (another region or version; FORCE=1, no per-version fixes)
+        required: false
+        default: true
+        type: boolean
+      app_name:
+        description: Bundle name of the app (letters and digits). Empty = from the game
+        required: false
+        type: string
+      runner:
+        description: Runner label (a Mac with Xcode)
+        required: false
+        default: macos-15
+        type: string
+      retention_days:
+        description: Days the ipa stays downloadable
+        required: false
+        default: "3"
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ipa:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 360
+    env:
+      GAME_URL: ${{ inputs.game_url || secrets.GAME_URL }}
+      FIRMWARE_URL: ${{ inputs.firmware_url || secrets.FIRMWARE_URL }}
+      UPDATE_URL: ${{ inputs.update_url || secrets.UPDATE_URL }}
+      ATIV_IOS_TOOLCHAIN: /Users/runner/ativ-ios
+      ATIV_IOS_TC: /usr/bin
+      ATIV_IOS_LD: apple
+      TARGET: ios
+      ATIV_DUMP: ${{ github.workspace }}/dump   # (firmware, decrypted game, recompiled code: one library for every step)
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - name: links
+        run: |
+          for v in GAME_URL FIRMWARE_URL UPDATE_URL; do [[ -n ${!v} ]] && echo "::add-mask::${!v}"; done
+          [[ -n $GAME_URL ]] || { echo "::error::no game link: fill game_url, or add the GAME_URL secret"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+
+      - name: room on the runner
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/Library/Android /Users/runner/.dotnet /Users/runner/hostedtoolcache/Java* 2>/dev/null || true
+          df -h / | tail -1; sysctl -n hw.ncpu hw.memsize | tr '\n' ' '; echo
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+
+      - name: python packages
+        run: python -m pip install -r requirements.txt
+
+      - name: iOS toolchain cache
+        id: tc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: ${{ env.ATIV_IOS_TOOLCHAIN }}
+          key: ios-toolchain-${{ runner.arch }}-${{ hashFiles('runtime/platform/ios/setup-toolchain.sh') }}
+
+      - name: iOS toolchain (SDL3, zlib, SPIRV-Cross, FFmpeg)
+        run: |
+          command -v ninja >/dev/null || brew install ninja >/dev/null 2>&1 || true
+          echo "xcode: $(xcodebuild -version | tr '\n' ' ')"; echo "sdk: $(xcrun --sdk iphoneos --show-sdk-path)"
+          bash runtime/platform/ios/setup-toolchain.sh
+          rm -rf "$ATIV_IOS_TOOLCHAIN"/{dl,sdl-src,sdl-build,spirv-src,spirv-build,zlib-src,ffmpeg-src}   # (sources and objects: not cached)
+
+      - name: aria2 (fast multi-connection download)
+        run: brew install aria2 >/dev/null 2>&1 || true; aria2c --version | head -1
+
+      - name: download the game
+        run: |
+          brew install aria2 >/dev/null 2>&1 || true
+          dl() {
+            local f="$RUNNER_TEMP/$(basename "$2").part"
+            aria2c -x16 -s16 -k1M --file-allocation=none --allow-overwrite=true --max-tries=5 \
+              --user-agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15" \
+              -d "$RUNNER_TEMP" -o "$(basename "$f")" "$1"
+            bash dev/ci/fetch.sh "file://$f" "$2"
+            rm -f "$f"
+          }
+          dl "$GAME_URL" "$RUNNER_TEMP/dl"
+          [[ -z $UPDATE_URL ]]   || dl "$UPDATE_URL" "$RUNNER_TEMP/dl/update"
+          [[ -z $FIRMWARE_URL ]] || dl "$FIRMWARE_URL" "$RUNNER_TEMP/dl/firmware"
+
+      - name: what the download holds
+        run: python -I dev/ci/find_inputs.py "$RUNNER_TEMP/dl" --json "$RUNNER_TEMP/inputs.json"
+
+      - name: firmware, decrypt, recompile
+        id: game
+        env:
+          WANT_TITLE: ${{ inputs.title }}
+          EXPERIMENTAL: ${{ inputs.experimental }}
+        run: |
+          args=(--github-output "$GITHUB_OUTPUT")
+          [[ -z $WANT_TITLE ]] || args+=(--title "$WANT_TITLE")
+          [[ $EXPERIMENTAL == false ]] || args+=(--experimental)
+          python -I dev/ci/prepare_game.py "$RUNNER_TEMP/dl" "${args[@]}"
+          df -h / | tail -1
+
+      - name: the download is no longer needed
+        run: rm -rf "$RUNNER_TEMP/dl"
+
+      - name: build the app for iOS and pack the ipa
+        id: pack
+        env:
+          TITLE: ${{ steps.game.outputs.title }}
+          GAME_NAME: ${{ steps.game.outputs.name }}
+          APP_NAME: ${{ inputs.app_name }}
+          FORCE: ${{ steps.game.outputs.force }}   # (1 when the version isn't one its pack plays and experimental is on)
+          JOBS: "3"   # a part file of the game's C needs ~2 GB while it compiles
+        run: |
+          export ATIV_IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          [[ -n $FORCE ]] || unset FORCE
+          mkdir -p "$RUNNER_TEMP/ipa"
+          args=("$TITLE" "$RUNNER_TEMP/ipa/$TITLE.ipa")
+          [[ -z $APP_NAME ]] || args+=(--app-name "$APP_NAME")
+          [[ -z $GAME_NAME ]] || args+=(--display-name "$GAME_NAME")
+          python pipeline/vitarecomp.py export-ios "${args[@]}"
+          ipa="$RUNNER_TEMP/ipa/$TITLE.ipa"; echo "ipa=$ipa" >> "$GITHUB_OUTPUT"
+          { echo "### ${GAME_NAME:-$TITLE} ($TITLE)"; echo; echo "unsigned ipa: $(du -h "$ipa" | cut -f1). Sign it with Sideloadly, AltStore or TrollStore."; } >> "$GITHUB_STEP_SUMMARY"
+          df -h / | tail -1
+
+      - name: ipa
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: ${{ steps.game.outputs.title }}-unsigned-ipa
+          path: ${{ steps.pack.outputs.ipa }}
+          compression-level: 0
+          retention-days: ${{ inputs.retention_days || 3 }}
+          if-no-files-found: error
+
+      - name: logs of a failed run
+        if: failure()
+        run: |
+          for f in "$ATIV_IOS_TOOLCHAIN"/*.log; do [[ -f $f ]] && { echo "::group::$f"; tail -40 "$f"; echo "::endgroup::"; }; done
+          find dump -maxdepth 4 -name '*.log' 2>/dev/null | head -5 | while read -r f; do echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; done
+          true

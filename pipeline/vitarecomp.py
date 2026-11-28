@@ -34,6 +34,11 @@
                                             x86_64: the emulator), packed with the game's images, signed with the
                                             player's own key; the game's files inside it, or beside it as <name>-data.zip
                                             (big games); --install: onto the USB device too (adb) -- private. In WSL
+  vitarecomp export-ios <title> <out.ipa> [--app-name Name] [--display-name Name] [--env NAME=VALUE]   a built game as an unsigned ipa for the
+                                            player's OWN iPhone or iPad (pipeline/ipa.py): compiled for arm64 iOS on a Mac
+                                            (Xcode; runtime/platform/ios/setup-toolchain.sh, the ATIV_IOS_* settings of
+                                            runtime/build.py), packed with the game's images and app0 -- private. Sign it
+                                            with Sideloadly, AltStore or TrollStore
   vitarecomp export-win <title> <out-folder> [--cpu LEVEL] [--zip] [--camera light|webcam|dark]   a built game as a folder for the
                                             player's OWN other Windows PCs (pipeline/portable.py): compiled once
                                             more for a CPU level other PCs have (default x86-64-v3; native and
@@ -155,6 +160,7 @@ RECOMPILER, RUNTIME, PACKS, DECRYPT, DEV = (os.path.join(ROOT, d) for d in ("rec
 PACKS = os.environ.get("ATIV_PACKS") or PACKS   # (ATIV_PACKS=<dir>: the packs read from there -- a game run as if it had none, bootstrap's test)
 sys.path.insert(0, R)
 import apk  # noqa: E402
+import ipa  # noqa: E402
 import appimage  # noqa: E402
 import portable  # noqa: E402
 import bootstrap  # noqa: E402
@@ -1605,6 +1611,70 @@ def cmd_export_apk(T, out, rest):
     return 0
 
 
+def cmd_export_ios(T, out, rest):
+    """the game as an unsigned ipa for the player's own iPhone or iPad (pipeline/ipa.py): its code as it is (made by the
+    launcher's Build: nothing is recompiled) compiled once more for arm64 iOS -- a second host binary, <base>_ios, beside the play
+    binary (RECOMP_BIN; it and .built_version untouched) -- then the bundle: the binary, the game's images, the pack's shader
+    recipes, app0 (copied whole), the game's start (launch.txt) and its icon. Needs a Mac with Xcode (runtime/platform/ios/
+    setup-toolchain.sh: SDL3, zlib, SPIRV-Cross and FFmpeg for iOS, ATIV_IOS_TOOLCHAIN; ATIV_IOS_SDK, ATIV_IOS_TC, ATIV_IOS_LD=apple)"""
+    if not out.endswith(".ipa"): die("export-ios: the output is a file named <something>.ipa")
+    app_arg = disp_arg = None; extra_env = []
+    it = iter(rest)
+    for a in it:
+        if a == "--app-name": app_arg = next(it, "")
+        elif a == "--display-name": disp_arg = next(it, "")
+        elif a == "--env":
+            v = next(it, "")
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=[^\n]*", v): die(f"export-ios: --env {v!r}: NAME=VALUE")
+            extra_env.append(tuple(v.split("=", 1)))
+        else: die(f"export-ios: unknown option {a} (--app-name, --display-name, --env NAME=VALUE)")
+    if not all(ENV.get(k) for k in ("ATIV_IOS_TOOLCHAIN", "ATIV_IOS_SDK", "ATIV_IOS_TC")):
+        die("export-ios: no iOS toolchain: set ATIV_IOS_TOOLCHAIN (made by runtime/platform/ios/setup-toolchain.sh), ATIV_IOS_SDK "
+            "(xcrun --sdk iphoneos --show-sdk-path) and ATIV_IOS_TC (the clang's folder, /usr/bin; ATIV_IOS_LD=apple links with Xcode's linker)")
+    say("export: " + ipa.NOTICE)
+    g = Game(T, "export-ios")
+    if not os.path.isfile(os.path.join(g.W, "elf", g.ELF)): die(f"{T}: not added yet (vitarecomp add, or + Add game in the launcher)")
+    if g.detected_version == "": unsupported_version(g)
+    stamp = os.path.join(g.OUT, ".recompile_inputs")
+    if not os.path.isfile(stamp) or open(stamp, encoding="utf-8").read().strip() != recompile_inputs(g):
+        die(f"{T}: its code isn't made for these tools yet: build it (vitarecomp ready {T}, or Build in the launcher), then export")
+    app0 = export_app0(g)
+    files = apk.app0_files(app0); size = sum(sz for _r, sz in files)
+    say(f"export 1/3: compiling {g.NAME} for iOS (arm64); the first time takes as long as a build")
+    run(SELF + ["build", T], env=env_with({"TARGET": "ios", "RECOMP_BIN": "ios"}))
+    exe = os.path.join(g.OUT, f"{g.BASE}_ios")
+    if not os.path.isfile(exe): die(f"export-ios: {exe} wasn't made")
+    imgs = [g.BASE + ".img"] + [m + ".img" for m in g.MODS] + [m + ".img" for m in g.LMODS]
+    data = [(os.path.join(g.OUT, n), n) for n in imgs]
+    for src, n in data:
+        if not os.path.isfile(src): die(f"export-ios: {n} wasn't made in {g.OUT}")
+    shipped = os.path.join(PACKS, g.PACK, "shaders.txt")
+    if os.path.isfile(shipped): data.append((shipped, "shaders.txt"))
+    env = [tuple(w.partition("=")[::2]) for w in g.RUN_ENV.split() if "=" in w]
+    env += [(k, v) for k, v in play_fixed_env(g, "$FILES/shaders.txt") if k != "RECOMP_ICON"]
+    if g.MODS: env.append(("RECOMP_MODULES", ",".join(f"$FILES/{m}.img" for m in g.MODS)))
+    if g.LMODS: env.append(("RECOMP_LOAD_MODULES", ";".join(f"{g.LPATH[m]}=$FILES/{m}.img" for m in g.LMODS)))
+    env += extra_env
+    work = tempfile.mkdtemp(prefix="nativ-ios-")
+    try:
+        launch = os.path.join(work, "launch.txt")
+        with open(launch, "w", encoding="utf-8", newline="\n") as f:
+            f.write(apk.launch_text([f"$FILES/{g.BASE}.img", g.entry(), "100000000000"], env))
+        data.append((launch, "launch.txt"))
+        icon = os.path.join(app0, "sce_sys", "icon0.png")
+        if not os.path.isfile(icon): icon = os.path.join(ROOT, "assets", "brand", "png", "icon-256.png")
+        name = ipa.app_name(app_arg or g.NAME, g.TITLE_ID)
+        display = disp_arg or g.NAME or name
+        say(f"export 2/3: packing {name} ({ipa.bundle_id(g.TITLE_ID)}): the game's files {size / 1e6:.0f} MB, {len(files)} files")
+        plist = ipa.info_plist(ipa.bundle_id(g.TITLE_ID), os.path.basename(exe), name, display, g.VERSION or "1.0")
+        ipa.build_ipa(out, name, plist, exe, os.path.basename(exe), data, icon, app0)
+    finally: shutil.rmtree(work, ignore_errors=True)
+    say(f"exported {g.NAME} -> {ENV.get('NATIV_OUT_SHOWN') or out} ({os.path.getsize(out) / 1e6:.0f} MB, unsigned). On the device: sign and install it "
+        "with Sideloadly, AltStore or TrollStore; the game's log and saves are in Files > the app's folder (Nativ)")
+    say("export: " + ipa.NOTICE)
+    return 0
+
+
 def cmd_export_win(T, out, rest):
     """the game as a folder for the player's own other Windows PCs (pipeline/portable.py): its code as it is (made by the
     launcher's Build: nothing is recompiled) compiled once more for a CPU level other PCs have -- --cpu, default x86-64-v3
@@ -1698,6 +1768,9 @@ def main(argv):
     if cmd == "export-apk":
         if len(argv) < 3: usage(); return 1
         return cmd_export_apk(T, argv[2], argv[3:])
+    if cmd == "export-ios":
+        if len(argv) < 3: usage(); return 1
+        return cmd_export_ios(T, argv[2], argv[3:])
     if cmd == "export-win":
         if len(argv) < 3: usage(); return 1
         return cmd_export_win(T, argv[2], argv[3:])

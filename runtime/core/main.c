@@ -870,9 +870,76 @@ static void android_start(void) {
 	SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
 }
 #endif
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#include <SDL3/SDL_main.h>   /* (main becomes SDL_main: SDL's own main starts UIApplication, and calls it on the app's main thread) */
+#include <sys/stat.h>
+#include <limits.h>
+#include <errno.h>
+extern const char *ios_documents_dir(void);   /* (runtime/platform/ios_shims.m) */
+/* an exported game (vitarecomp export-ios, pipeline/ipa.py): the app bundle's data/launch.txt is the game's start as
+ * `vitarecomp run` gives it -- "arg <value>" (its image, entry, import budget) and "env <NAME>=<value>" lines, with $FILES
+ * for the bundle's data/ folder and $DATA for the app's Documents/Nativ. The game works in Documents/Nativ (the Files app
+ * shows it: session.log, env.txt, settings.ini, the saves in fs/), as `vitarecomp run` works in its folder:
+ *   fs/app0   a link to the bundle's data/app0 (the game's files travel inside the ipa; the bundle's path changes with every
+ *             install, so the link is made again at each start) -- unless a real folder is there: the player's own copy
+ *   env.txt   one NAME=value per line, optional: settings for the next start (RECOMP_LOG=1 ...)
+ * stderr goes to session.log (the one before kept as session.prev.log): iOS has no console to read it from. */
+static char *ios_argv_store[16];
+static void ios_start(int *argc, char ***argv) {
+	char work[PATH_MAX], path[PATH_MAX], files[PATH_MAX], line[4096];
+	snprintf(work, sizeof work, "%sNativ", ios_documents_dir());
+	mkdir(work, 0755);
+	if (chdir(work) != 0) return;
+	rename("session.log", "session.prev.log");
+	if (freopen("session.log", "w", stderr)) { setvbuf(stderr, 0, _IOLBF, 0); dup2(fileno(stderr), 1); }
+	const char *base = SDL_GetBasePath();   /* the .app folder, with a slash */
+	snprintf(files, sizeof files, "%sdata", base ? base : "");
+	mkdir("fs", 0755);
+	snprintf(path, sizeof path, "%s/app0", files);
+	struct stat st;
+	if (lstat("fs/app0", &st) == 0 && S_ISLNK(st.st_mode)) unlink("fs/app0");
+	if (lstat("fs/app0", &st) != 0 && symlink(path, "fs/app0") != 0) fprintf(stderr, "ios: fs/app0 -> %s: %s\n", path, strerror(errno));
+	FILE *f = fopen("env.txt", "r");   /* the player's settings first: setenv keeps what is set (overwrite 0) */
+	if (f) {
+		while (fgets(line, sizeof line, f)) {
+			char *e = strchr(line, '='); line[strcspn(line, "\r\n")] = 0;
+			if (line[0] && line[0] != '#' && e) { *e = 0; setenv(line, e + 1, 1); }
+		}
+		fclose(f);
+	}
+	int n = 1;
+	ios_argv_store[0] = (*argv)[0];
+	snprintf(path, sizeof path, "%s/launch.txt", files);
+	if (!(f = fopen(path, "r"))) { fprintf(stderr, "ios: no %s: the app has no game\n", path); return; }
+	while (fgets(line, sizeof line, f)) {
+		line[strcspn(line, "\r\n")] = 0;
+		char val[4096], *o = val;
+		const char *in = strncmp(line, "arg ", 4) == 0 ? line + 4 : strncmp(line, "env ", 4) == 0 ? line + 4 : NULL;
+		if (!in) continue;
+		for (; *in && o < val + sizeof val - PATH_MAX - 1; ) {   /* $FILES and $DATA */
+			if (!strncmp(in, "$FILES", 6)) { o += snprintf(o, PATH_MAX, "%s", files); in += 6; }
+			else if (!strncmp(in, "$DATA", 5)) { o += snprintf(o, PATH_MAX, "%s", work); in += 5; }
+			else *o++ = *in++;
+		}
+		*o = 0;
+		if (line[0] == 'a') { if (n < 15) ios_argv_store[n++] = strdup(val); }
+		else { char *e = strchr(val, '='); if (e) { *e = 0; if (!getenv(val)) setenv(val, e + 1, 1); } }
+	}
+	fclose(f);
+	ios_argv_store[n] = NULL;
+	*argc = n; *argv = ios_argv_store;
+	fprintf(stderr, "ios: the game's data %s; its folder %s\n", files, work);
+}
+#endif
 int main(int argc, char **argv) {
 #ifdef __ANDROID__
 	android_start();
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+	ios_start(&argc, &argv);
 #endif
 	builtin_env();
 	atexit(gaps_report);   /* GAPS-01: the GAPS line + table and gaps.json at the end of every run */

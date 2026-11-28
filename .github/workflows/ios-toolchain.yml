@@ -1,0 +1,37 @@
+# Builds the iOS toolchain (SDL3, zlib, SPIRV-Cross, FFmpeg for arm64 iOS: runtime/platform/ios/setup-toolchain.sh) and keeps
+# it in the cache build-ipa restores, so a build with a game starts at once. Runs when the script changes, or by hand; no
+# game is involved.
+name: ios-toolchain
+on:
+  workflow_dispatch:
+  push:
+    branches: [fp/main]
+    paths:
+      - runtime/platform/ios/setup-toolchain.sh
+      - .github/workflows/ios-toolchain.yml
+permissions:
+  contents: read
+jobs:
+  toolchain:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      ATIV_IOS_TOOLCHAIN: /Users/runner/ativ-ios
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - name: cache
+        id: tc
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9   # v6.1.0
+        with:
+          path: ${{ env.ATIV_IOS_TOOLCHAIN }}
+          key: ios-toolchain-${{ runner.arch }}-${{ hashFiles('runtime/platform/ios/setup-toolchain.sh') }}
+      - name: toolchain
+        run: |
+          command -v ninja >/dev/null || brew install ninja >/dev/null 2>&1 || true
+          echo "xcode: $(xcodebuild -version | tr '\n' ' ')"; echo "sdk: $(xcrun --sdk iphoneos --show-sdk-path)"
+          bash runtime/platform/ios/setup-toolchain.sh
+          rm -rf "$ATIV_IOS_TOOLCHAIN"/{dl,sdl-src,sdl-build,spirv-src,spirv-build,zlib-src,ffmpeg-src}
+          du -sh "$ATIV_IOS_TOOLCHAIN"/*
+      - name: logs of a failed run
+        if: failure()
+        run: for f in "$ATIV_IOS_TOOLCHAIN"/*.log; do [[ -f $f ]] && { echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; }; done; true

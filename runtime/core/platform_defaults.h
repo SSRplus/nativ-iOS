@@ -6,7 +6,10 @@
 #ifndef PLATFORM_DEFAULTS_H
 #define PLATFORM_DEFAULTS_H
 
-#ifdef __ANDROID__
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)   /* (iOS: a phone's GPU too; Metal, so no swapchain mailbox to speak of) */
 #define DEFAULT_ANISOTROPY 1
 #define DEFAULT_VULKAN_MAILBOX 0
 #else

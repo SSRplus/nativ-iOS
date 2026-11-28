@@ -30,6 +30,9 @@
  *       RECOMP_OVERLAY_DUMP_PAD=ps|xbox|switch  that dump with a virtual controller of that kind attached (the foot's button names)
  *       RECOMP_OVERLAY_DUMP_SIZE=WxH  that dump as in a window of W x H: the frame fitted (dump_fit.h), the menu at W x H
  */
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <SDL3/SDL.h>
 #include "gpulock.h"   /* every SDL submit/fence call below is the locked one: Homebrew SDL 3.4.16's Metal fence race, see that header */
 #include <pthread.h>
@@ -1230,7 +1233,7 @@ void window_run(void *(*fn)(void *), void *arg) {
 	 * scripted test that cares what the window looks like */
 	{ char b[16]; settings_str("aspect", "fit", b, sizeof b);
 	  aspect_mode = !strcmp(b, "stretch") ? ASPECT_STRETCH : !strcmp(b, "fill") ? ASPECT_FILL : ASPECT_FIT; }   /* window_set_aspect also saves: read it in directly instead, nothing changed yet */
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IPHONE)
 	SDL_SetWindowFullscreen(win, true);   /* (a device: the whole screen, the system bars hidden -- no window to have) */
 #else
 	{	const int fs = window_fullscreen_flag >= 0 ? window_fullscreen_flag : settings_int("fullscreen", 0);   /* (the game's --fullscreen / --windowed: this run only) */
