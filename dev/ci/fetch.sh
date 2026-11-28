@@ -36,4 +36,5 @@ case $magic in
     exit 1 ;;
 esac
 rm -f "$part" "$part.hdr"
+chmod -R u+rwX "$dest" 2>/dev/null || true   # (a Vita dump's files and folders come out read-only: the clean-up below needs to delete them)
 echo "unpacked into $dest: $(find "$dest" -type f | wc -l | tr -d ' ') files, $(du -sh "$dest" | cut -f1)"
