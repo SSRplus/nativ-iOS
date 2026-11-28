@@ -139,9 +139,6 @@ jobs:
           python -I dev/ci/prepare_game.py "$RUNNER_TEMP/dl" "${args[@]}"
           df -h / | tail -1
 
-      - name: the download is no longer needed
-        run: chmod -R u+rwX "$RUNNER_TEMP/dl" 2>/dev/null; rm -rf "$RUNNER_TEMP/dl" || true
-
       - name: build the app for iOS and pack the ipa
         id: pack
         env:
