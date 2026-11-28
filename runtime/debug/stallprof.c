@@ -16,7 +16,10 @@
 
 void stallprof_present(void);
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && defined(__aarch64__) && !TARGET_OS_IPHONE   /* (iOS has no mach_vm: the no-op below) */
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
