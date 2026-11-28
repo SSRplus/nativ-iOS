@@ -32,6 +32,21 @@ jobs:
           bash runtime/platform/ios/setup-toolchain.sh
           rm -rf "$ATIV_IOS_TOOLCHAIN"/{dl,sdl-src,sdl-build,spirv-src,spirv-build,zlib-src,ffmpeg-src}
           du -sh "$ATIV_IOS_TOOLCHAIN"/*
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.13" }
+      - name: the runtime compiles for iOS (with an empty game; the final link stops on the game symbols)
+        env:
+          ATIV_IOS_TC: /usr/bin
+          ATIV_IOS_LD: apple
+          TARGET: ios
+          JOBS: "3"
+        run: |
+          export ATIV_IOS_SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p "$RUNNER_TEMP/empty" && : > "$RUNNER_TEMP/empty/g.c" && : > "$RUNNER_TEMP/empty/g.h"
+          python runtime/build.py "$RUNNER_TEMP/empty/g" "$RUNNER_TEMP/empty/out" > "$RUNNER_TEMP/build.log" 2>&1 || true
+          tail -5 "$RUNNER_TEMP/build.log"
+          if grep -E "error:|fatal error" "$RUNNER_TEMP/build.log" | grep -v "undefined symbol" | head -40 | grep .; then echo "::error::the runtime does not compile for iOS"; exit 1; fi
+          echo "no compile errors"
       - name: logs of a failed run
         if: failure()
         run: for f in "$ATIV_IOS_TOOLCHAIN"/*.log; do [[ -f $f ]] && { echo "::group::$f"; tail -60 "$f"; echo "::endgroup::"; }; done; true
