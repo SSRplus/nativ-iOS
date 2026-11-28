@@ -38,6 +38,11 @@ on:
         required: false
         default: true
         type: boolean
+      like_pack:
+        description: A pack of the same game (another region) whose modules and settings a copy with no pack of its own uses (PCSB00875 = God Eater 2 Rage Burst)
+        required: false
+        default: PCSB00875
+        type: string
       app_name:
         description: Bundle name of the app (letters and digits). Empty = from the game
         required: false
@@ -132,8 +137,10 @@ jobs:
         env:
           WANT_TITLE: ${{ inputs.title }}
           EXPERIMENTAL: ${{ inputs.experimental }}
+          LIKE_PACK: ${{ inputs.like_pack }}
         run: |
           args=(--github-output "$GITHUB_OUTPUT")
+          [[ -z $LIKE_PACK ]] || args+=(--like-pack "$LIKE_PACK")
           [[ -z $WANT_TITLE ]] || args+=(--title "$WANT_TITLE")
           [[ $EXPERIMENTAL == false ]] || args+=(--experimental)
           python -I dev/ci/prepare_game.py "$RUNNER_TEMP/dl" "${args[@]}"
